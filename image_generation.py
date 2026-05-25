@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import random
 
-def create_noise(width=256, height=256):
+def create_noise(width=1024, height=1024):
     noise = np.random.randint(0, 256, (height, width), dtype=np.uint8)
     return noise
 
@@ -39,7 +39,7 @@ def embed_targets(noise, num_targets, target_args):
     return noise, mask
 
 
-def segment_image(image, segment_height, segment_width, overlap, positive_threshold=0.5):
+def segment_image(image, mask, segment_height, segment_width, overlap, positive_threshold=1):
     segments = []
     positions = []
     image_height, image_width = image.shape[:2]
@@ -74,9 +74,11 @@ def segment_image(image, segment_height, segment_width, overlap, positive_thresh
 
 
 # target configs:
-SIZE = 8
-MODE = 'bw'
-BLOCK_SIZE = 1
+SIZE=8
+MODE='bw'
+BLOCK_SIZE=1
+SEGMENT_SIZE=224
+SEGMENT_OVERLAP=64
 
 
 if __name__ == "main":
@@ -84,4 +86,6 @@ if __name__ == "main":
     NUM_TARGETS = random.randint(1, 10)
 
     background_noise = create_noise()
-    full_image, mask = embed_targets(background_noise)
+    full_image, mask = embed_targets(background_noise, NUM_TARGETS, target_args)
+
+    segments, labels = segment_image(full_image, mask, SEGMENT_SIZE, SEGMENT_SIZE, SEGMENT_OVERLAP)
