@@ -166,4 +166,4 @@ if __name__ == "__main__":
     background_noise = create_noise(516, 516)
     full_image, mask = embed_targets(background_noise, 5, target_args)
 
-    visualise_predictions(model, full_image, mask, segment_size=64, overlap=16, vis_img_path="prediction_visual.png")
+    visualise_predictions(model, full_image, mask, segment_size=32, overlap=20, vis_img_path="prediction_visual.png")
