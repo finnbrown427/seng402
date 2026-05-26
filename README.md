@@ -9,7 +9,10 @@ In your local directory:<br>
 python3 -m venv venv  
 source venv/bin/activate
 
-#### **2) Install dependencies**
+#### **2) Upgrade pip**
+python -m pip install --upgrade pip
+
+#### **3) Install dependencies**
 pip install numpy opencv-python torch torchvision torchaudio
 
 ## Usage
