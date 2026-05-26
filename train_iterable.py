@@ -87,7 +87,11 @@ def run_train(
         running_loss = 0.0
         running_correct = 0
         running_total = 0
+        tp = 0
+        fp = 0
+        fn = 0
 
+        # train loop
         for segments, labels in train_loader:
             segments = segments.to(device)
             labels = labels.to(device)
@@ -103,13 +107,27 @@ def run_train(
             running_correct += (preds == labels).sum().item()
             running_total += labels.numel()
 
+            labels_i = labels.int()
+            preds_i = preds.int()
+            tp += ((preds_i == 1) & (labels_i == 1)).sum().item()
+            fp += ((preds_i == 1) & (labels_i == 0)).sum().item()
+            fn += ((preds_i == 0) & (labels_i == 1)).sum().item()
+
         train_loss = running_loss / running_total
         train_acc = running_correct / running_total
+        eps = 1e-8
+        train_precision = tp / (tp + fp + eps)
+        train_recall = tp / (tp + fn + eps)
+        train_f1 = 2 * train_precision * train_recall / (train_precision + train_recall + eps)
 
+        # validation loop
         model.eval()
         val_loss = 0.0
         val_correct = 0
         val_total = 0
+        val_tp = 0
+        val_fp = 0
+        val_fn = 0
 
         with torch.no_grad():
             for segments, labels in val_loader:
@@ -123,13 +141,22 @@ def run_train(
                 val_correct += (preds == labels).sum().item()
                 val_total += labels.numel()
 
+                labels_i = labels.int()
+                preds_i = preds.int()
+                val_tp += ((preds_i == 1) & (labels_i == 1)).sum().item()
+                val_fp += ((preds_i == 1) & (labels_i == 0)).sum().item()
+                val_fn += ((preds_i == 0) & (labels_i == 1)).sum().item()
+
         val_loss /= val_total
         val_acc = val_correct / val_total
+        val_precision = val_tp / (val_tp + val_fp + eps)
+        val_recall = val_tp / (val_tp + val_fn + eps)
+        val_f1 = 2 * val_precision * val_recall / (val_precision + val_recall + eps)
 
         print(
-            f"Epoch {epoch}: "
-            f"train_loss={train_loss:.4f} train_acc={train_acc:.3f} "
-            f"val_loss={val_loss:.4f} val_acc={val_acc:.3f}"
+            f"Epoch {epoch}: \n"
+            f"training: loss={train_loss:.4f} acc={train_acc:.3f} prec={train_precision:.3f} recall={train_recall:.3f} F1={train_f1:.3f} \n"
+            f"validation: loss={val_loss:.4f} acc={val_acc:.3f} prec={val_precision:.3f} recall={val_recall:.3f} F1={val_f1:.3f}"
         )
     return model
 
