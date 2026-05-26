@@ -35,7 +35,7 @@ class TargetIterableDataset(IterableDataset):
                 full_image = background_noise
                 mask = np.zeros_like(background_noise, dtype=np.uint8)
 
-            segments, labels = segment_image(
+            segments, labels, _ = segment_image(
                 full_image, mask, self.segment_size, self.segment_size,
                 self.overlap, self.positive_threshold
             )
@@ -48,7 +48,7 @@ class TargetIterableDataset(IterableDataset):
 
 
 def run_train(
-    epochs=5,
+    epochs=2,
     batch_size=32,
     lr=1e-3,
     train_samples=1000,
@@ -131,7 +131,39 @@ def run_train(
             f"train_loss={train_loss:.4f} train_acc={train_acc:.3f} "
             f"val_loss={val_loss:.4f} val_acc={val_acc:.3f}"
         )
+        return model
 
+def visualise_predictions(model, image, mask, segment_size, overlap, vis_img_path, device="cpu"):
+    segments, _, positions = segment_image(image, mask, segment_size, segment_size, overlap)
+
+    segment_array = np.stack(segments).astype(np.float32) / 255.0
+    segment_tensor = torch.from_numpy(segment_array).unsqueeze(1).to(device)
+
+    model.eval()
+    with torch.no_grad():
+        logits = model(segment_tensor)
+        probs = torch.sigmoid(logits).squeeze(1).cpu().numpy()
+
+    heat = np.zeros_like(image, dtype=np.float32)
+    count = np.zeros_like(image, dtype=np.float32)
+    for (y, x, y_end, x_end), p in zip(positions, probs):
+        heat[y:y_end, x:x_end] += p
+        count[y:y_end, x:x_end] += 1.0
+
+    heat = np.divide(heat, count, out=np.zeros_like(heat), where=count > 0)
+    heat_u8 = (heat * 255).astype(np.uint8)
+    heat_color = cv2.applyColorMap(heat_u8, cv2.COLORMAP_JET)
+
+    base = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    overlay = cv2.addWeighted(base, 0.6, heat_color, 0.4, 0.0)
+    cv2.imwrite(vis_img_path, overlay)
 
 if __name__ == "__main__":
-    run_train()
+    model = run_train()
+
+    # for making visualisation
+    target_args = (8, "bw", 1)
+    background_noise = create_noise(516, 516)
+    full_image, mask = embed_targets(background_noise, 5, target_args)
+
+    visualise_predictions(model, full_image, mask, segment_size=64, overlap=16, vis_img_path="prediction_visual.png")

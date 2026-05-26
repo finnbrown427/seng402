@@ -70,7 +70,7 @@ def segment_image(image, mask, segment_height, segment_width, overlap, positive_
         label = 1 if int(mask_crop.sum()) >= positive_threshold else 0
         labels.append(label)
 
-    return segments, labels
+    return segments, labels, positions
 
 
 # target configs:
@@ -88,4 +88,4 @@ if __name__ == "main":
     background_noise = create_noise()
     full_image, mask = embed_targets(background_noise, NUM_TARGETS, target_args)
 
-    segments, labels = segment_image(full_image, mask, SEGMENT_SIZE, SEGMENT_SIZE, SEGMENT_OVERLAP)
+    segments, labels, positions = segment_image(full_image, mask, SEGMENT_SIZE, SEGMENT_SIZE, SEGMENT_OVERLAP)
