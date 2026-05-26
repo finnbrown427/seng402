@@ -48,10 +48,10 @@ class TargetIterableDataset(IterableDataset):
 
 
 def run_train(
-    epochs=2,
+    epochs=5,
     batch_size=32,
     lr=1e-3,
-    train_samples=1000,
+    train_samples=750,
     val_samples=100,
     image_size=516,
     segment_size=64,
@@ -131,7 +131,7 @@ def run_train(
             f"train_loss={train_loss:.4f} train_acc={train_acc:.3f} "
             f"val_loss={val_loss:.4f} val_acc={val_acc:.3f}"
         )
-        return model
+    return model
 
 def visualise_predictions(model, image, mask, segment_size, overlap, vis_img_path, device="cpu"):
     segments, _, positions = segment_image(image, mask, segment_size, segment_size, overlap)

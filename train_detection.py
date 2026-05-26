@@ -1,3 +1,7 @@
+"""
+Trains model using only one segment per image - legacy
+"""
+
 import random
 import cv2
 import numpy as np
