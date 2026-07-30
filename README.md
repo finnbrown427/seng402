@@ -10,7 +10,7 @@ python3 -m venv venv
 source venv/bin/activate
 
 #### **2) Install dependencies**
-pip install numpy opencv-python torch torchvision torchaudio
+python -m pip install numpy opencv-python torch torchvision torchaudio
 
 ## Usage
 **To train target detection and generate visulisation image**<br>  

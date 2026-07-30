@@ -1,6 +1,7 @@
-import cv2
-import numpy as np
 import random
+import numpy as np
+import cv2
+
 
 def create_noise(width=1024, height=1024):
     noise = np.random.randint(0, 256, (height, width), dtype=np.uint8)
@@ -39,7 +40,21 @@ def embed_targets(noise, num_targets, target_args):
     return noise, mask
 
 
+def validate_segment_config(segment_height, segment_width, overlap):
+    if segment_height <= 0 or segment_width <= 0:
+        raise ValueError("segment size must be greater than zero")
+    if overlap < 0:
+        raise ValueError("overlap must be non-negative")
+    if overlap >= segment_height or overlap >= segment_width:
+        raise ValueError(
+            f"overlap must be smaller than the segment size; got overlap={overlap}, segment_size={segment_height}"
+        )
+    return True
+
+
 def segment_image(image, mask, segment_height, segment_width, overlap, positive_threshold=1):
+    validate_segment_config(segment_height, segment_width, overlap)
+
     segments = []
     positions = []
     image_height, image_width = image.shape[:2]
