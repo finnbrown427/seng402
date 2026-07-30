@@ -9,8 +9,16 @@ In your local directory:<br>
 python3 -m venv venv  
 source venv/bin/activate
 
+<<<<<<< HEAD
 #### **2) Install dependencies**
 python -m pip install numpy opencv-python torch torchvision torchaudio
+=======
+#### **2) Upgrade pip**
+python -m pip install --upgrade pip
+
+#### **3) Install dependencies**
+pip install numpy opencv-python torch torchvision torchaudio
+>>>>>>> bc6f076aaa8c30dbea1be89b307a0ec6d16afea6
 
 ## Usage
 **To train target detection and generate visulisation image**<br>  
