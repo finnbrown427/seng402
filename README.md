@@ -6,23 +6,31 @@ Pipeline for generating and pre-processing a dataset of small targets hidden in 
 ## Setup Instructions
 #### **1) Create & activate virtual enviroment**
 In your local directory:<br>  
-python3 -m venv venv  
-source venv/bin/activate
+python3 -m venv .venv  
+source .venv/bin/activate
 
-<<<<<<< HEAD
-#### **2) Install dependencies**
-python -m pip install numpy opencv-python torch torchvision torchaudio
-=======
 #### **2) Upgrade pip**
 python -m pip install --upgrade pip
 
 #### **3) Install dependencies**
-pip install numpy opencv-python torch torchvision torchaudio
->>>>>>> bc6f076aaa8c30dbea1be89b307a0ec6d16afea6
+python -m pip install -r requirements.txt
+
+If the environment gets into a bad state, delete `.venv/` and run these steps again.
 
 ## Usage
 **To train target detection and generate visulisation image**<br>  
 python train_iterable.py
+
+## Recreating The Environment
+
+This project is set up to be recreated from scratch with the same steps every time:
+
+1. Remove any existing `.venv/` folder.
+2. Create a new virtual environment with `python3 -m venv .venv`.
+3. Activate it and run `python -m pip install --upgrade pip`.
+4. Install packages with `python -m pip install -r requirements.txt`.
+
+If Torch still fails to import, try using Python 3.12 or 3.11 for the virtual environment, since Torch wheels can be sensitive to the Python version.
 
 ## Project Structure
 

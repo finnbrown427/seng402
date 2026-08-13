@@ -1,5 +1,6 @@
 import csv
 import random
+import os
 import numpy as np
 
 import cv2
@@ -21,7 +22,8 @@ from image_generation import (create_noise, create_target, embed_targets, segmen
 class TargetIterableDataset(IterableDataset):
     def __init__(self, num_samples=5000, image_size=1024, segment_size=224, overlap=64,
                  target_prob=0.5, max_targets=10, target_size=8, target_mode="bw",
-                 block_size=1, positive_threshold=0.5):
+                 block_size=1, positive_threshold=0.5, target_shape="square",
+                 mix_mode="per_target", target_kwargs=None):
         self.num_samples = num_samples
         self.image_size = image_size
         self.segment_size = segment_size
@@ -32,15 +34,29 @@ class TargetIterableDataset(IterableDataset):
         self.target_mode = target_mode
         self.block_size = block_size
         self.positive_threshold = positive_threshold
+        self.target_shape = target_shape
+        self.mix_mode = mix_mode
+        self.target_kwargs = dict(target_kwargs) if target_kwargs is not None else {}
 
     def __iter__(self):
         for _ in range(self.num_samples):
-            target_args = (self.target_size, self.target_mode, self.block_size)
+            base_target_kwargs = {
+                "size": self.target_size,
+                "mode": self.target_mode,
+                "block_size": self.block_size,
+                **self.target_kwargs,
+            }
             background_noise = create_noise(self.image_size, self.image_size)
 
             if random.random() < self.target_prob:
                 num_targets = random.randint(1, self.max_targets)
-                full_image, mask = embed_targets(background_noise, num_targets, target_args)
+                full_image, mask = embed_targets(
+                    background_noise,
+                    num_targets,
+                    target_kwargs=base_target_kwargs,
+                    target_shape=self.target_shape,
+                    mix_mode=self.mix_mode,
+                )
             else:
                 full_image = background_noise
                 mask = np.zeros_like(background_noise, dtype=np.uint8)
@@ -58,7 +74,7 @@ class TargetIterableDataset(IterableDataset):
 
 
 def run_train(
-    epochs=5,
+    epochs=3,
     batch_size=32,
     lr=1e-3,
     train_samples=750,
@@ -69,11 +85,20 @@ def run_train(
     target_prob=0.5,
     seed=42,
     return_metrics=False,
+    train_target_shape="circle",
+    val_target_shape="circle",
+    train_mix_mode=None,
+    val_mix_mode=None,
 ):
     if torch is None or nn is None or WatermarkCNN is None:
         raise ImportError("PyTorch is required to run training.")
 
     validate_segment_config(segment_size, segment_size, overlap)
+
+    if val_target_shape is None:
+        val_target_shape = train_target_shape
+    if val_mix_mode is None:
+        val_mix_mode = train_mix_mode
 
     if seed is not None:
         random.seed(seed)
@@ -90,6 +115,8 @@ def run_train(
         segment_size=segment_size,
         overlap=overlap,
         target_prob=target_prob,
+        target_shape=train_target_shape,
+        mix_mode=train_mix_mode,
     )
     val_ds = TargetIterableDataset(
         num_samples=val_samples,
@@ -97,6 +124,8 @@ def run_train(
         segment_size=segment_size,
         overlap=overlap,
         target_prob=target_prob,
+        target_shape=val_target_shape,
+        mix_mode=val_mix_mode,
     )
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False, num_workers=0)
@@ -288,7 +317,22 @@ def run_segment_sweep(
     seed_base=42,
     output_csv="segment_sweep_results.csv",
     plot_path="segment_sweep_results.png",
+    target_shape="square",
+    mix_mode="per_target",
+    train_target_shape=None,
+    val_target_shape=None,
+    train_mix_mode=None,
+    val_mix_mode=None,
 ):
+    if train_target_shape is None:
+        train_target_shape = target_shape
+    if val_target_shape is None:
+        val_target_shape = train_target_shape
+    if train_mix_mode is None:
+        train_mix_mode = mix_mode
+    if val_mix_mode is None:
+        val_mix_mode = train_mix_mode
+
     configs = build_sweep_configs(segment_sizes, overlaps)
     all_results = []
 
@@ -313,6 +357,10 @@ def run_segment_sweep(
                 target_prob=target_prob,
                 seed=seed,
                 return_metrics=True,
+                train_target_shape=train_target_shape,
+                val_target_shape=val_target_shape,
+                train_mix_mode=train_mix_mode,
+                val_mix_mode=val_mix_mode,
             )
             metrics["seed"] = seed
             metrics["run"] = run_idx + 1
@@ -335,7 +383,7 @@ def run_segment_sweep(
         summary_results.append(summary)
 
     ranked_results = rank_sweep_results(summary_results)
-    save_sweep_results(ranked_results, output_path)
+    save_sweep_results(ranked_results, output_csv)
     plot_sweep_results(ranked_results, plot_path)
 
     print("Sweep results:")
@@ -348,14 +396,19 @@ def run_segment_sweep(
     return ranked_results
 
 
-def visualise_predictions(model, image, mask, segment_size, overlap, vis_img_path, device="cpu"):
+def visualise_predictions(model, image, mask, segment_size, overlap, vis_img_path, device=None):
     if cv2 is None:
         raise ImportError("OpenCV is required to create prediction visualisations.")
+
+    model_device = next(model.parameters()).device
+    if device is not None:
+        model_device = torch.device(device)
+        model = model.to(model_device)
 
     segments, _, positions = segment_image(image, mask, segment_size, segment_size, overlap)
 
     segment_array = np.stack(segments).astype(np.float32) / 255.0
-    segment_tensor = torch.from_numpy(segment_array).unsqueeze(1).to(device)
+    segment_tensor = torch.from_numpy(segment_array).unsqueeze(1).to(model_device)
 
     model.eval()
     with torch.no_grad():
@@ -378,42 +431,77 @@ def visualise_predictions(model, image, mask, segment_size, overlap, vis_img_pat
 
 
 if __name__ == "__main__":
-    sweep_results = run_segment_sweep(
-        segment_sizes=(32, 64, 96),
-        overlaps=(0, 8, 16, 32),
-        epochs=3,
-        batch_size=32,
-        lr=1e-3,
-        train_samples=300,
-        val_samples=80,
-        image_size=516,
-        target_prob=0.5,
-        repeat_runs=1,
-        seed_base=42,
-    )
-
-    model = run_train(
-        epochs=3,
-        batch_size=32,
-        lr=1e-3,
-        train_samples=300,
-        val_samples=80,
-        image_size=516,
-        segment_size=sweep_results[0]["segment_size"],
-        overlap=sweep_results[0]["overlap"],
-        target_prob=0.5,
-        seed=42,
-    )
+    run_sweep = False  # Set to True to run the hyperparameter sweep
+    
+    if run_sweep:
+        sweep_results = run_segment_sweep(
+            segment_sizes=(32, 64, 96),
+            overlaps=(0, 8, 16, 32),
+            epochs=5,
+            batch_size=32,
+            lr=1e-3,
+            train_samples=5000,
+            val_samples=1000,
+            image_size=516,
+            target_prob=0.5,
+            repeat_runs=1,
+            seed_base=42,
+        )
+        
+        model = run_train(
+            epochs=5,
+            batch_size=32,
+            lr=1e-3,
+            train_samples=5000,
+            val_samples=1000,
+            image_size=516,
+            segment_size=sweep_results[0]["segment_size"],
+            overlap=sweep_results[0]["overlap"],
+            target_prob=0.5,
+            seed=42,
+        )
+    else:
+        model = run_train(
+            epochs=3,
+            batch_size=32,
+            lr=1e-3,
+            train_samples=4000,
+            val_samples=1500,
+            image_size=516,
+            segment_size=64,
+            overlap=8,
+            target_prob=0.5,
+            seed=42,
+        )
 
     target_args = (8, "bw", 1)
     background_noise = create_noise(516, 516)
-    full_image, mask = embed_targets(background_noise, 5, target_args)
+    # full_image, mask = embed_targets(background_noise, 5, target_args)
 
-    visualise_predictions(
-        model,
-        full_image,
-        mask,
-        segment_size=sweep_results[0]["segment_size"],
-        overlap=sweep_results[0]["overlap"],
-        vis_img_path="prediction_visual.png",
-    )
+
+    full_image, mask = embed_targets(
+                    background_noise,
+                    5,
+                    target_kwargs = {"size": 8, "mode": "bw", "block_size": 1, "shape": "circle"},
+                    target_shape="circle",
+                    mix_mode=None,
+                )
+
+    if run_sweep:
+        visualise_predictions(
+            model,
+            full_image,
+            mask,
+            segment_size=sweep_results[0]["segment_size"],
+            overlap=sweep_results[0]["overlap"],
+            vis_img_path="prediction_visual.png",
+        )
+    else:
+        visualise_predictions(
+            model,
+            full_image,
+            mask,
+            segment_size=32,
+            overlap=20,
+            vis_img_path="prediction_visual.png",
+        )
