@@ -201,7 +201,7 @@ SEGMENT_OVERLAP=64
 
 if __name__ == "main":
     target_args = (SIZE, MODE, BLOCK_SIZE)
-    NUM_TARGETS = random.randint(1, 10)
+    NUM_TARGETS = 64
 
     background_noise = create_noise()
     full_image, mask = embed_targets(background_noise, NUM_TARGETS, target_args)

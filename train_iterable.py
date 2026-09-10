@@ -21,7 +21,7 @@ from image_generation import (create_noise, create_target, embed_targets, segmen
 
 class TargetIterableDataset(IterableDataset):
     def __init__(self, num_samples=5000, image_size=1024, segment_size=224, overlap=64,
-                 target_prob=0.5, max_targets=10, target_size=8, target_mode="bw",
+                 target_prob=0.95, max_targets=78, target_size=8, target_mode="bw",
                  block_size=1, positive_threshold=0.5, target_shape="square",
                  mix_mode="per_target", target_kwargs=None):
         self.num_samples = num_samples
@@ -83,12 +83,17 @@ def run_train(
     segment_size=64,
     overlap=16,
     target_prob=0.5,
-    seed=42,
+    target_size=8,
+    train_target_size=None,
+    val_target_size=None,
+    seed=67,
     return_metrics=False,
     train_target_shape="circle",
-    val_target_shape="circle",
+    val_target_shape="square",
     train_mix_mode=None,
     val_mix_mode=None,
+    train_target_kwargs=None,
+    val_target_kwargs=None,
 ):
     if torch is None or nn is None or WatermarkCNN is None:
         raise ImportError("PyTorch is required to run training.")
@@ -99,6 +104,16 @@ def run_train(
         val_target_shape = train_target_shape
     if val_mix_mode is None:
         val_mix_mode = train_mix_mode
+
+    if train_target_size is None:
+        train_target_size = target_size
+    if val_target_size is None:
+        val_target_size = train_target_size
+
+    train_target_kwargs = dict(train_target_kwargs) if train_target_kwargs is not None else {}
+    val_target_kwargs = dict(val_target_kwargs) if val_target_kwargs is not None else {}
+    train_target_kwargs.setdefault("size", train_target_size)
+    val_target_kwargs.setdefault("size", val_target_size)
 
     if seed is not None:
         random.seed(seed)
@@ -117,6 +132,7 @@ def run_train(
         target_prob=target_prob,
         target_shape=train_target_shape,
         mix_mode=train_mix_mode,
+        target_kwargs=train_target_kwargs,
     )
     val_ds = TargetIterableDataset(
         num_samples=val_samples,
@@ -126,6 +142,7 @@ def run_train(
         target_prob=target_prob,
         target_shape=val_target_shape,
         mix_mode=val_mix_mode,
+        target_kwargs=val_target_kwargs,
     )
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False, num_workers=0)
@@ -247,6 +264,44 @@ def rank_sweep_results(results):
     return sorted(results, key=lambda item: item.get("val_f1", -1), reverse=True)
 
 
+def build_target_transfer_configs(train_target_sizes, val_target_sizes):
+    return [
+        {"train_target_size": train_target_size, "val_target_size": val_target_size}
+        for train_target_size in train_target_sizes
+        for val_target_size in val_target_sizes
+    ]
+
+
+def summarize_target_transfer_results(results):
+    summary_results = []
+    unique_train_sizes = sorted({item["train_target_size"] for item in results})
+    unique_val_sizes = sorted({item["val_target_size"] for item in results})
+
+    for train_target_size in unique_train_sizes:
+        for val_target_size in unique_val_sizes:
+            matching = [
+                item
+                for item in results
+                if item["train_target_size"] == train_target_size and item["val_target_size"] == val_target_size
+            ]
+            if not matching:
+                continue
+
+            summary_results.append(
+                {
+                    "train_target_size": train_target_size,
+                    "val_target_size": val_target_size,
+                    "val_loss": float(np.mean([item["val_loss"] for item in matching])),
+                    "val_acc": float(np.mean([item["val_acc"] for item in matching])),
+                    "val_precision": float(np.mean([item["val_precision"] for item in matching])),
+                    "val_recall": float(np.mean([item["val_recall"] for item in matching])),
+                    "val_f1": float(np.mean([item["val_f1"] for item in matching])),
+                }
+            )
+
+    return summary_results
+
+
 def save_sweep_results(results, output_path="segment_sweep_results.csv"):
     fieldnames = [
         "segment_size",
@@ -257,6 +312,26 @@ def save_sweep_results(results, output_path="segment_sweep_results.csv"):
         "val_recall",
         "val_f1",
         "seed",
+    ]
+
+    with open(output_path, "w", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in results:
+            writer.writerow({field: row.get(field, "") for field in fieldnames})
+
+
+def save_target_transfer_results(results, output_path="target_transfer_results.csv"):
+    fieldnames = [
+        "train_target_size",
+        "val_target_size",
+        "val_loss",
+        "val_acc",
+        "val_precision",
+        "val_recall",
+        "val_f1",
+        "seed",
+        "run",
     ]
 
     with open(output_path, "w", newline="") as csv_file:
@@ -301,6 +376,119 @@ def plot_sweep_results(results, output_path="segment_sweep_results.png"):
     fig.savefig(output_path, dpi=200)
     plt.close(fig)
     return output_path
+
+
+def plot_target_transfer_results(results, output_path="target_transfer_results.png"):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib is not installed; skipping plot export.")
+        return None
+
+    train_sizes = sorted({item["train_target_size"] for item in results})
+    val_sizes = sorted({item["val_target_size"] for item in results})
+
+    matrix = np.zeros((len(train_sizes), len(val_sizes)), dtype=np.float32)
+    for item in results:
+        row = train_sizes.index(item["train_target_size"])
+        col = val_sizes.index(item["val_target_size"])
+        matrix[row, col] = item["val_acc"]
+
+    fig, ax = plt.subplots(figsize=(max(6, 1.4 * len(val_sizes)), max(4, 1.2 * len(train_sizes))))
+    image = ax.imshow(matrix, cmap="viridis", vmin=0.0, vmax=1.0)
+    ax.set_xticks(np.arange(len(val_sizes)))
+    ax.set_xticklabels(val_sizes)
+    ax.set_yticks(np.arange(len(train_sizes)))
+    ax.set_yticklabels(train_sizes)
+    ax.set_xlabel("Evaluation target size")
+    ax.set_ylabel("Training target size")
+    ax.set_title("Validation accuracy by train/eval target size")
+
+    for row_idx in range(matrix.shape[0]):
+        for col_idx in range(matrix.shape[1]):
+            ax.text(col_idx, row_idx, f"{matrix[row_idx, col_idx]:.3f}", ha="center", va="center")
+
+    fig.colorbar(image, ax=ax, label="Validation accuracy")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+    return output_path
+
+
+def run_target_transfer_experiment(
+    train_target_sizes=(4, 12),
+    val_target_sizes=(4, 12),
+    epochs=3,
+    batch_size=32,
+    lr=1e-3,
+    train_samples=300,
+    val_samples=80,
+    image_size=516,
+    target_prob=0.5,
+    repeat_runs=1,
+    seed_base=42,
+    output_csv="target_transfer_results.csv",
+    plot_path="target_transfer_results.png",
+    target_shape="circle",
+    mix_mode="per_target",
+    train_target_shape=None,
+    val_target_shape=None,
+    train_mix_mode=None,
+    val_mix_mode=None,
+):
+    if train_target_shape is None:
+        train_target_shape = target_shape
+    if val_target_shape is None:
+        val_target_shape = train_target_shape
+    if train_mix_mode is None:
+        train_mix_mode = mix_mode
+    if val_mix_mode is None:
+        val_mix_mode = train_mix_mode
+
+    configs = build_target_transfer_configs(train_target_sizes, val_target_sizes)
+    all_results = []
+
+    for config in configs:
+        for run_idx in range(repeat_runs):
+            seed = seed_base + run_idx
+            _, metrics = run_train(
+                epochs=epochs,
+                batch_size=batch_size,
+                lr=lr,
+                train_samples=train_samples,
+                val_samples=val_samples,
+                image_size=image_size,
+                segment_size=64,
+                overlap=32,
+                target_prob=target_prob,
+                seed=seed,
+                return_metrics=True,
+                train_target_shape=train_target_shape,
+                val_target_shape=val_target_shape,
+                train_mix_mode=train_mix_mode,
+                val_mix_mode=val_mix_mode,
+                train_target_size=config["train_target_size"],
+                val_target_size=config["val_target_size"],
+            )
+            metrics["train_target_size"] = config["train_target_size"]
+            metrics["val_target_size"] = config["val_target_size"]
+            metrics["seed"] = seed
+            metrics["run"] = run_idx + 1
+            all_results.append(metrics)
+
+    summary_results = summarize_target_transfer_results(all_results)
+    ranked_results = sorted(summary_results, key=lambda item: item.get("val_acc", -1), reverse=True)
+    save_target_transfer_results(all_results, output_csv)
+    plot_target_transfer_results(ranked_results, plot_path)
+
+    print("Target transfer results:")
+    for result in ranked_results:
+        print(
+            f"train_target_size={result['train_target_size']} val_target_size={result['val_target_size']} "
+            f"val_acc={result['val_acc']:.3f} val_f1={result['val_f1']:.3f}"
+        )
+
+    return ranked_results
 
 
 def run_segment_sweep(
@@ -396,7 +584,7 @@ def run_segment_sweep(
     return ranked_results
 
 
-def visualise_predictions(model, image, mask, segment_size, overlap, vis_img_path, device=None):
+def visualise_predictions(model, image, mask, segment_size, overlap, vis_img_path, mask_img_path=None, device=None):
     if cv2 is None:
         raise ImportError("OpenCV is required to create prediction visualisations.")
 
@@ -429,9 +617,13 @@ def visualise_predictions(model, image, mask, segment_size, overlap, vis_img_pat
     overlay = cv2.addWeighted(base, 0.6, heat_color, 0.4, 0.0)
     cv2.imwrite(vis_img_path, overlay)
 
+    if mask_img_path is not None:
+        mask_u8 = (mask > 0).astype(np.uint8) * 255
+        cv2.imwrite(mask_img_path, mask_u8)
+
 
 if __name__ == "__main__":
-    run_sweep = False  # Set to True to run the hyperparameter sweep
+    run_sweep = False
     
     if run_sweep:
         sweep_results = run_segment_sweep(
@@ -445,7 +637,7 @@ if __name__ == "__main__":
             image_size=516,
             target_prob=0.5,
             repeat_runs=1,
-            seed_base=42,
+            seed_base=67,
         )
         
         model = run_train(
@@ -458,20 +650,20 @@ if __name__ == "__main__":
             segment_size=sweep_results[0]["segment_size"],
             overlap=sweep_results[0]["overlap"],
             target_prob=0.5,
-            seed=42,
+            seed=67,
         )
     else:
         model = run_train(
             epochs=3,
             batch_size=32,
             lr=1e-3,
-            train_samples=4000,
-            val_samples=1500,
+            train_samples=500,
+            val_samples=100,
             image_size=516,
             segment_size=64,
-            overlap=8,
+            overlap=32,
             target_prob=0.5,
-            seed=42,
+            seed=67,
         )
 
     target_args = (8, "bw", 1)
@@ -495,13 +687,15 @@ if __name__ == "__main__":
             segment_size=sweep_results[0]["segment_size"],
             overlap=sweep_results[0]["overlap"],
             vis_img_path="prediction_visual.png",
+            mask_img_path="target_mask_visual.png",
         )
     else:
         visualise_predictions(
             model,
             full_image,
             mask,
-            segment_size=32,
-            overlap=20,
+            segment_size=64,
+            overlap=32,
             vis_img_path="prediction_visual.png",
+            mask_img_path="target_mask_visual.png",
         )
