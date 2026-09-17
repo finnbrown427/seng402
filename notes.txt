@@ -1,0 +1,25 @@
+square -> circle (1,10 target frequency so class imbalance)
+
+Epoch 1: 
+training: loss=0.0805 acc=0.978 prec=0.973 recall=0.453 F1=0.618 
+validation: loss=0.4166 acc=0.950 prec=0.000 recall=0.000 F1=0.000
+Epoch 2: 
+training: loss=0.0284 acc=0.993 prec=0.990 recall=0.839 F1=0.908 
+validation: loss=0.3077 acc=0.964 prec=0.000 recall=0.000 F1=0.000
+Epoch 3: 
+training: loss=0.0167 acc=0.996 prec=0.991 recall=0.910 F1=0.949 
+validation: loss=0.1700 acc=0.963 prec=0.000 recall=0.000 F1=0.000
+
+
+circle -> square (10, 25. still broken on validation, still class imbalance though probably)
+
+Epoch 1: 
+training: loss=0.0952 acc=0.974 prec=0.970 recall=0.346 F1=0.510 
+validation: loss=0.2018 acc=0.950 prec=1.000 recall=0.003 F1=0.007
+Epoch 2: 
+training: loss=0.0308 acc=0.993 prec=0.992 recall=0.824 F1=0.900 
+validation: loss=0.2538 acc=0.964 prec=0.000 recall=0.000 F1=0.000
+Epoch 3: 
+training: loss=0.0219 acc=0.995 prec=0.991 recall=0.885 F1=0.935 
+validation: loss=0.3309 acc=0.963 prec=0.000 recall=0.000 F1=0.000
+

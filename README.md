@@ -17,20 +17,22 @@ python -m pip install -r requirements.txt
 
 If the environment gets into a bad state, delete `.venv/` and run these steps again.
 
+Note: do not copy `.venv/` between computers. Recreate it on each machine with the steps above so the Python paths and compiled packages match that machine.
+
 ## Usage
 **To train target detection and generate visulisation image**<br>  
 python train_iterable.py
 
 ## Recreating The Environment
 
-This project is set up to be recreated from scratch with the same steps every time:
+This project is meant to be recreated from scratch on each computer:
 
 1. Remove any existing `.venv/` folder.
 2. Create a new virtual environment with `python3 -m venv .venv`.
 3. Activate it and run `python -m pip install --upgrade pip`.
 4. Install packages with `python -m pip install -r requirements.txt`.
 
-If Torch still fails to import, try using Python 3.12 or 3.11 for the virtual environment, since Torch wheels can be sensitive to the Python version.
+If Torch still fails to import, try using Python 3.12 or 3.11 for the virtual environment, since Torch wheels can be sensitive to the Python version. If you want the most reliable setup across multiple computers, use the same Python version on each one.
 
 ## Project Structure
 
