@@ -86,10 +86,11 @@ def run_train(
     target_size=8,
     train_target_size=None,
     val_target_size=None,
+    decision_threshold=0.3,
     seed=67,
     return_metrics=False,
     train_target_shape="circle",
-    val_target_shape="square",
+    val_target_shape=None,
     train_mix_mode=None,
     val_mix_mode=None,
     train_target_kwargs=None,
@@ -147,6 +148,7 @@ def run_train(
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    val_batches = list(val_loader)
 
     model = WatermarkCNN().to(device)
     criterion = nn.BCEWithLogitsLoss()
@@ -175,7 +177,7 @@ def run_train(
             optimizer.step()
 
             running_loss += loss.item() * segments.size(0)
-            preds = (torch.sigmoid(logits) > 0.5).float()
+            preds = (torch.sigmoid(logits) > decision_threshold).float()
             running_correct += (preds == labels).sum().item()
             running_total += labels.numel()
 
@@ -202,14 +204,14 @@ def run_train(
         val_fn = 0
 
         with torch.no_grad():
-            for segments, labels in val_loader:
+            for segments, labels in val_batches:
                 segments = segments.to(device)
                 labels = labels.to(device)
                 logits = model(segments)
                 loss = criterion(logits, labels)
 
                 val_loss += loss.item() * segments.size(0)
-                preds = (torch.sigmoid(logits) > 0.5).float()
+                preds = (torch.sigmoid(logits) > decision_threshold).float()
                 val_correct += (preds == labels).sum().item()
                 val_total += labels.numel()
 
@@ -224,6 +226,8 @@ def run_train(
         val_precision = val_tp / (val_tp + val_fp + eps)
         val_recall = val_tp / (val_tp + val_fn + eps)
         val_f1 = 2 * val_precision * val_recall / (val_precision + val_recall + eps)
+        val_label_positive_rate = (val_tp + val_fn) / val_total
+        val_predicted_positive_rate = (val_tp + val_fp) / val_total
 
         last_metrics = {
             "segment_size": segment_size,
@@ -239,12 +243,15 @@ def run_train(
             "val_precision": val_precision,
             "val_recall": val_recall,
             "val_f1": val_f1,
+            "val_label_positive_rate": val_label_positive_rate,
+            "val_predicted_positive_rate": val_predicted_positive_rate,
         }
 
         print(
             f"Epoch {epoch}: \n"
             f"training: loss={train_loss:.4f} acc={train_acc:.3f} prec={train_precision:.3f} recall={train_recall:.3f} F1={train_f1:.3f} \n"
-            f"validation: loss={val_loss:.4f} acc={val_acc:.3f} prec={val_precision:.3f} recall={val_recall:.3f} F1={val_f1:.3f}"
+            f"validation: loss={val_loss:.4f} acc={val_acc:.3f} prec={val_precision:.3f} recall={val_recall:.3f} F1={val_f1:.3f} "
+            f"labels+={val_label_positive_rate:.3f} predicted+={val_predicted_positive_rate:.3f}"
         )
 
     if return_metrics:
