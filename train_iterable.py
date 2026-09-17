@@ -4,14 +4,9 @@ import os
 import numpy as np
 
 import cv2
-
-
-
 import torch
 import torch.nn as nn
 from torch.utils.data import IterableDataset, DataLoader
-
-
 
 from pytorch_cnn import WatermarkCNN
 
@@ -629,80 +624,123 @@ def visualise_predictions(model, image, mask, segment_size, overlap, vis_img_pat
         cv2.imwrite(mask_img_path, mask_u8)
 
 
+RUN_CONFIG = {
+    "run_sweep": False,
+    "training": {
+        "epochs": 3,
+        "batch_size": 32,
+        "lr": 1e-3,
+        "train_samples": 500,
+        "val_samples": 100,
+        "image_size": 516,
+        "segment_size": 64,
+        "overlap": 32,
+        "target_prob": 0.5,
+        "target_size": 8,
+        "decision_threshold": 0.3,
+        "seed": 67,
+    },
+    "sweep": {
+        "segment_sizes": (32, 64, 96),
+        "overlaps": (0, 8, 16, 32),
+        "epochs": 5,
+        "batch_size": 32,
+        "lr": 1e-3,
+        "train_samples": 5000,
+        "val_samples": 1000,
+        "image_size": 516,
+        "target_prob": 0.5,
+        "repeat_runs": 1,
+        "seed_base": 67,
+        "target_shape": "circle",
+        "mix_mode": None,
+    },
+    "target": {
+        "count": 5,
+        "size": 8,
+        "mode": "bw",
+        "block_size": 1,
+        "shape": "circle",
+        "mix_mode": None,
+    },
+    "visualisation": {
+        "output_path": "prediction_visual.png",
+        "mask_output_path": "target_mask_visual.png",
+    },
+}
+
+
+def print_run_modes(config, segment_size, overlap):
+    target_config = config["target"]
+    print(
+        "Run configuration: "
+        f"mode={'segment sweep' if config['run_sweep'] else 'standard training'}, "
+        f"target_shape={target_config['shape']}, "
+        f"target_mix_mode={target_config['mix_mode']}, "
+        f"target_size={target_config['size']}, "
+        f"segment_size={segment_size}, overlap={overlap}, "
+        f"threshold={config['training']['decision_threshold']}"
+    )
+
+
 if __name__ == "__main__":
-    run_sweep = False
-    
+    run_sweep = RUN_CONFIG["run_sweep"]
+    training_config = RUN_CONFIG["training"]
+    sweep_config = RUN_CONFIG["sweep"]
+    target_config = RUN_CONFIG["target"]
+    visualisation_config = RUN_CONFIG["visualisation"]
+
     if run_sweep:
-        sweep_results = run_segment_sweep(
-            segment_sizes=(32, 64, 96),
-            overlaps=(0, 8, 16, 32),
-            epochs=5,
-            batch_size=32,
-            lr=1e-3,
-            train_samples=5000,
-            val_samples=1000,
-            image_size=516,
-            target_prob=0.5,
-            repeat_runs=1,
-            seed_base=67,
+        print_run_modes(
+            RUN_CONFIG,
+            sweep_config["segment_sizes"],
+            sweep_config["overlaps"],
         )
-        
+        sweep_results = run_segment_sweep(**sweep_config)
+        segment_size = sweep_results[0]["segment_size"]
+        overlap = sweep_results[0]["overlap"]
+        sweep_training_config = {
+            **training_config,
+            "epochs": sweep_config["epochs"],
+            "batch_size": sweep_config["batch_size"],
+            "lr": sweep_config["lr"],
+            "train_samples": sweep_config["train_samples"],
+            "val_samples": sweep_config["val_samples"],
+            "image_size": sweep_config["image_size"],
+            "target_prob": sweep_config["target_prob"],
+            "seed": sweep_config["seed_base"],
+        }
         model = run_train(
-            epochs=5,
-            batch_size=32,
-            lr=1e-3,
-            train_samples=5000,
-            val_samples=1000,
-            image_size=516,
-            segment_size=sweep_results[0]["segment_size"],
-            overlap=sweep_results[0]["overlap"],
-            target_prob=0.5,
-            seed=67,
+            **sweep_training_config,
+            segment_size=segment_size,
+            overlap=overlap,
         )
     else:
-        model = run_train(
-            epochs=3,
-            batch_size=32,
-            lr=1e-3,
-            train_samples=500,
-            val_samples=100,
-            image_size=516,
-            segment_size=64,
-            overlap=32,
-            target_prob=0.5,
-            seed=67,
-        )
+        segment_size = training_config["segment_size"]
+        overlap = training_config["overlap"]
+        print_run_modes(RUN_CONFIG, segment_size, overlap)
+        model = run_train(**training_config)
 
-    target_args = (8, "bw", 1)
-    background_noise = create_noise(516, 516)
-    # full_image, mask = embed_targets(background_noise, 5, target_args)
-
-
+    background_noise = create_noise(training_config["image_size"], training_config["image_size"])
     full_image, mask = embed_targets(
-                    background_noise,
-                    5,
-                    target_kwargs = {"size": 8, "mode": "bw", "block_size": 1, "shape": "circle"},
-                    target_shape="circle",
-                    mix_mode=None,
-                )
+        background_noise,
+        target_config["count"],
+        target_kwargs={
+            "size": target_config["size"],
+            "mode": target_config["mode"],
+            "block_size": target_config["block_size"],
+            "shape": target_config["shape"],
+        },
+        target_shape=target_config["shape"],
+        mix_mode=target_config["mix_mode"],
+    )
 
-    if run_sweep:
-        visualise_predictions(
-            model,
-            full_image,
-            mask,
-            segment_size=sweep_results[0]["segment_size"],
-            overlap=sweep_results[0]["overlap"],
-            vis_img_path="prediction_visual.png",
-            mask_img_path="target_mask_visual.png",
-        )
-    else:
-        visualise_predictions(
-            model,
-            full_image,
-            mask,
-            segment_size=64,
-            overlap=32,
-            vis_img_path="prediction_visual.png",
-            mask_img_path="target_mask_visual.png",
-        )
+    visualise_predictions(
+        model,
+        full_image,
+        mask,
+        segment_size=segment_size,
+        overlap=overlap,
+        vis_img_path=visualisation_config["output_path"],
+        mask_img_path=visualisation_config["mask_output_path"],
+    )
