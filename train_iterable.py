@@ -19,7 +19,7 @@ class TargetIterableDataset(IterableDataset):
     def __init__(self, num_samples=5000, image_size=1024, segment_size=224, overlap=64,
                  target_prob=0.95, max_targets=78, target_size=8, target_mode="bw",
                  block_size=1, positive_threshold=0.5, target_shape="square",
-                 mix_mode="per_target", target_kwargs=None):
+                 mix_mode="per_target", target_kwargs=None, seed=None):
         self.num_samples = num_samples
         self.image_size = image_size
         self.segment_size = segment_size
@@ -33,40 +33,51 @@ class TargetIterableDataset(IterableDataset):
         self.target_shape = target_shape
         self.mix_mode = mix_mode
         self.target_kwargs = dict(target_kwargs) if target_kwargs is not None else {}
+        self.seed = seed
 
     def __iter__(self):
-        for _ in range(self.num_samples):
-            base_target_kwargs = {
-                "size": self.target_size,
-                "mode": self.target_mode,
-                "block_size": self.block_size,
-                **self.target_kwargs,
-            }
-            background_noise = create_noise(self.image_size, self.image_size)
+        random_state = random.getstate()
+        numpy_state = np.random.get_state()
+        if self.seed is not None:
+            random.seed(self.seed)
+            np.random.seed(self.seed)
 
-            if random.random() < self.target_prob:
-                num_targets = random.randint(1, self.max_targets)
-                full_image, mask = embed_targets(
-                    background_noise,
-                    num_targets,
-                    target_kwargs=base_target_kwargs,
-                    target_shape=self.target_shape,
-                    mix_mode=self.mix_mode,
+        try:
+            for _ in range(self.num_samples):
+                base_target_kwargs = {
+                    "size": self.target_size,
+                    "mode": self.target_mode,
+                    "block_size": self.block_size,
+                    **self.target_kwargs,
+                }
+                background_noise = create_noise(self.image_size, self.image_size)
+
+                if random.random() < self.target_prob:
+                    num_targets = random.randint(1, self.max_targets)
+                    full_image, mask = embed_targets(
+                        background_noise,
+                        num_targets,
+                        target_kwargs=base_target_kwargs,
+                        target_shape=self.target_shape,
+                        mix_mode=self.mix_mode,
+                    )
+                else:
+                    full_image = background_noise
+                    mask = np.zeros_like(background_noise, dtype=np.uint8)
+
+                segments, labels, _ = segment_image(
+                    full_image, mask, self.segment_size, self.segment_size,
+                    self.overlap, self.positive_threshold
                 )
-            else:
-                full_image = background_noise
-                mask = np.zeros_like(background_noise, dtype=np.uint8)
 
-            segments, labels, _ = segment_image(
-                full_image, mask, self.segment_size, self.segment_size,
-                self.overlap, self.positive_threshold
-            )
-
-            for segment, label in zip(segments, labels):
-                segment = segment.astype(np.float32) / 255.0
-                segment_tensor = torch.from_numpy(segment).unsqueeze(0)
-                label_tensor = torch.tensor([float(label)], dtype=torch.float32)
-                yield segment_tensor, label_tensor
+                for segment, label in zip(segments, labels):
+                    segment = segment.astype(np.float32) / 255.0
+                    segment_tensor = torch.from_numpy(segment).unsqueeze(0)
+                    label_tensor = torch.tensor([float(label)], dtype=torch.float32)
+                    yield segment_tensor, label_tensor
+        finally:
+            random.setstate(random_state)
+            np.random.set_state(numpy_state)
 
 
 def run_train(
@@ -92,6 +103,8 @@ def run_train(
     train_target_kwargs=None,
     val_target_kwargs=None,
     restore_best=True,
+    validation_seed=None,
+    device="auto",
 ):
     if torch is None or nn is None or WatermarkCNN is None:
         raise ImportError("PyTorch is required to run training.")
@@ -120,7 +133,21 @@ def run_train(
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device == "auto":
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
+
+    if device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but is not available.")
+    if device == "mps" and not torch.backends.mps.is_available():
+        raise RuntimeError("MPS was requested but is not available.")
+    if device not in {"cpu", "cuda", "mps"}:
+        raise ValueError("device must be 'auto', 'cpu', 'cuda', or 'mps'.")
+    device = torch.device(device)
 
     train_ds = TargetIterableDataset(
         num_samples=train_samples,
@@ -141,6 +168,7 @@ def run_train(
         target_shape=val_target_shape,
         mix_mode=val_mix_mode,
         target_kwargs=val_target_kwargs,
+        seed=validation_seed if validation_seed is not None else (None if seed is None else seed + 1),
     )
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False, num_workers=0)
@@ -540,6 +568,7 @@ def run_segment_sweep(
     val_target_shape=None,
     train_mix_mode=None,
     val_mix_mode=None,
+    device="auto",
 ):
     if train_target_shape is None:
         train_target_shape = target_shape
@@ -578,6 +607,7 @@ def run_segment_sweep(
                 val_target_shape=val_target_shape,
                 train_mix_mode=train_mix_mode,
                 val_mix_mode=val_mix_mode,
+                device=device,
             )
             metrics["seed"] = seed
             metrics["run"] = run_idx + 1
@@ -657,8 +687,8 @@ RUN_CONFIG = {
         "epochs": 3,
         "batch_size": 32,
         "lr": 1e-3,
-        "train_samples": 500,
-        "val_samples": 100,
+        "train_samples": 1000,
+        "val_samples": 250,
         "image_size": 516,
         "segment_size": 64,
         "overlap": 32,
@@ -666,6 +696,8 @@ RUN_CONFIG = {
         "target_size": 8,
         "decision_threshold": 0.3,
         "seed": 67,
+        "validation_seed": 68,
+        "device": "cpu",
     },
     "sweep": {
         "segment_sizes": (32, 64, 96),
@@ -681,6 +713,7 @@ RUN_CONFIG = {
         "seed_base": 67,
         "target_shape": "circle",
         "mix_mode": None,
+        "device": "cpu",
     },
     "target": {
         "count": 5,
@@ -699,6 +732,21 @@ RUN_CONFIG = {
 
 def print_run_modes(config, segment_size, overlap):
     target_config = config["target"]
+    training_config = config["training"]
+    requested_device = training_config["device"]
+    if requested_device == "auto":
+        if torch.cuda.is_available():
+            resolved_device = "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            resolved_device = "mps"
+        else:
+            resolved_device = "cpu"
+    else:
+        resolved_device = requested_device
+
+    device_detail = resolved_device
+    if resolved_device == "cuda" and torch.cuda.is_available():
+        device_detail = f"cuda ({torch.cuda.get_device_name(0)})"
     print(
         "Run configuration: "
         f"mode={'segment sweep' if config['run_sweep'] else 'standard training'}, "
@@ -706,7 +754,8 @@ def print_run_modes(config, segment_size, overlap):
         f"target_mix_mode={target_config['mix_mode']}, "
         f"target_size={target_config['size']}, "
         f"segment_size={segment_size}, overlap={overlap}, "
-        f"threshold={config['training']['decision_threshold']}"
+        f"threshold={training_config['decision_threshold']}, "
+        f"device={device_detail}"
     )
 
 
