@@ -1,4 +1,5 @@
 import csv
+import copy
 import random
 import os
 import numpy as np
@@ -90,6 +91,7 @@ def run_train(
     val_mix_mode=None,
     train_target_kwargs=None,
     val_target_kwargs=None,
+    restore_best=True,
 ):
     if torch is None or nn is None or WatermarkCNN is None:
         raise ImportError("PyTorch is required to run training.")
@@ -150,6 +152,9 @@ def run_train(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     last_metrics = None
+    best_val_f1 = -1.0
+    best_model_state = None
+    best_metrics = None
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -197,6 +202,7 @@ def run_train(
         val_tp = 0
         val_fp = 0
         val_fn = 0
+        val_probabilities = []
 
         with torch.no_grad():
             for segments, labels in val_batches:
@@ -206,7 +212,9 @@ def run_train(
                 loss = criterion(logits, labels)
 
                 val_loss += loss.item() * segments.size(0)
-                preds = (torch.sigmoid(logits) > decision_threshold).float()
+                probabilities = torch.sigmoid(logits)
+                val_probabilities.append(probabilities.detach().cpu())
+                preds = (probabilities > decision_threshold).float()
                 val_correct += (preds == labels).sum().item()
                 val_total += labels.numel()
 
@@ -223,6 +231,15 @@ def run_train(
         val_f1 = 2 * val_precision * val_recall / (val_precision + val_recall + eps)
         val_label_positive_rate = (val_tp + val_fn) / val_total
         val_predicted_positive_rate = (val_tp + val_fp) / val_total
+        val_probabilities = torch.cat(val_probabilities)
+        val_probability_min = float(val_probabilities.min())
+        val_probability_max = float(val_probabilities.max())
+        val_probability_mean = float(val_probabilities.mean())
+
+        is_best = val_f1 > best_val_f1
+        if is_best:
+            best_val_f1 = val_f1
+            best_model_state = copy.deepcopy(model.state_dict())
 
         last_metrics = {
             "segment_size": segment_size,
@@ -240,14 +257,24 @@ def run_train(
             "val_f1": val_f1,
             "val_label_positive_rate": val_label_positive_rate,
             "val_predicted_positive_rate": val_predicted_positive_rate,
+            "val_probability_min": val_probability_min,
+            "val_probability_max": val_probability_max,
+            "val_probability_mean": val_probability_mean,
         }
+        if is_best:
+            best_metrics = copy.deepcopy(last_metrics)
 
         print(
             f"Epoch {epoch}: \n"
             f"training: loss={train_loss:.4f} acc={train_acc:.3f} prec={train_precision:.3f} recall={train_recall:.3f} F1={train_f1:.3f} \n"
             f"validation: loss={val_loss:.4f} acc={val_acc:.3f} prec={val_precision:.3f} recall={val_recall:.3f} F1={val_f1:.3f} "
-            f"labels+={val_label_positive_rate:.3f} predicted+={val_predicted_positive_rate:.3f}"
+            f"labels+={val_label_positive_rate:.3f} predicted+={val_predicted_positive_rate:.3f} "
+            f"probability={val_probability_min:.3f}-{val_probability_max:.3f}"
         )
+
+    if restore_best and best_model_state is not None:
+        model.load_state_dict(best_model_state)
+        last_metrics = best_metrics
 
     if return_metrics:
         return model, last_metrics
