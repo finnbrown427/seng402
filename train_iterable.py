@@ -21,7 +21,7 @@ from image_generation import (create_noise, create_target, embed_targets, segmen
 
 class TargetIterableDataset(IterableDataset):
     def __init__(self, num_samples=5000, image_size=1024, segment_size=224, overlap=64,
-                 target_prob=0.5, max_targets=10, target_size=8, target_mode="bw",
+                 target_prob=0.5, min_targets=10, max_targets=40, target_size=8, target_mode="bw",
                  block_size=1, positive_threshold=0.5, target_shape="square",
                  mix_mode="per_target", target_kwargs=None):
         self.num_samples = num_samples
@@ -29,6 +29,7 @@ class TargetIterableDataset(IterableDataset):
         self.segment_size = segment_size
         self.overlap = overlap
         self.target_prob = target_prob
+        self.min_targets = min_targets
         self.max_targets = max_targets
         self.target_size = target_size
         self.target_mode = target_mode
@@ -49,7 +50,7 @@ class TargetIterableDataset(IterableDataset):
             background_noise = create_noise(self.image_size, self.image_size)
 
             if random.random() < self.target_prob:
-                num_targets = random.randint(1, self.max_targets)
+                num_targets = random.randint(self.min_targets, self.max_targets)
                 full_image, mask = embed_targets(
                     background_noise,
                     num_targets,
@@ -82,11 +83,16 @@ def run_train(
     image_size=516,
     segment_size=64,
     overlap=16,
-    target_prob=0.5,
+    target_prob=0.8,
+    min_targets=10,
+    max_targets=40,
+    val_target_prob=0.5,
+    val_min_targets=4,
+    val_max_targets=10,
     seed=42,
     return_metrics=False,
-    train_target_shape="circle",
-    val_target_shape="circle",
+    train_target_shape="square",
+    val_target_shape="square",
     train_mix_mode=None,
     val_mix_mode=None,
 ):
@@ -115,6 +121,8 @@ def run_train(
         segment_size=segment_size,
         overlap=overlap,
         target_prob=target_prob,
+        min_targets=min_targets,
+        max_targets=max_targets,
         target_shape=train_target_shape,
         mix_mode=train_mix_mode,
     )
@@ -123,7 +131,9 @@ def run_train(
         image_size=image_size,
         segment_size=segment_size,
         overlap=overlap,
-        target_prob=target_prob,
+        target_prob=val_target_prob,
+        min_targets=val_min_targets,
+        max_targets=val_max_targets,
         target_shape=val_target_shape,
         mix_mode=val_mix_mode,
     )
@@ -443,7 +453,7 @@ if __name__ == "__main__":
             train_samples=5000,
             val_samples=1000,
             image_size=516,
-            target_prob=0.5,
+            target_prob=0.8,
             repeat_runs=1,
             seed_base=42,
         )
@@ -457,7 +467,7 @@ if __name__ == "__main__":
             image_size=516,
             segment_size=sweep_results[0]["segment_size"],
             overlap=sweep_results[0]["overlap"],
-            target_prob=0.5,
+            target_prob=0.8,
             seed=42,
         )
     else:
@@ -465,12 +475,12 @@ if __name__ == "__main__":
             epochs=3,
             batch_size=32,
             lr=1e-3,
-            train_samples=4000,
-            val_samples=1500,
+            train_samples=2500,
+            val_samples=500,
             image_size=516,
             segment_size=64,
             overlap=8,
-            target_prob=0.5,
+            target_prob=0.99,
             seed=42,
         )
 
@@ -481,7 +491,7 @@ if __name__ == "__main__":
 
     full_image, mask = embed_targets(
                     background_noise,
-                    5,
+                    10,
                     target_kwargs = {"size": 8, "mode": "bw", "block_size": 1, "shape": "circle"},
                     target_shape="circle",
                     mix_mode=None,
@@ -503,5 +513,5 @@ if __name__ == "__main__":
             mask,
             segment_size=32,
             overlap=20,
-            vis_img_path="prediction_visual.png",
+            vis_img_path="prediction_visual_new.png",
         )
