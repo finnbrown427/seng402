@@ -1,6 +1,6 @@
 import csv
+import copy
 import random
-import os
 import numpy as np
 
 import cv2
@@ -16,28 +16,33 @@ from torch.utils.data import IterableDataset, DataLoader
 from pytorch_cnn import WatermarkCNN
 
 
-from image_generation import (create_noise, create_target, embed_targets, segment_image, validate_segment_config)
+from image_generation import create_noise, embed_targets, segment_image, validate_segment_config
+
 
 
 class TargetIterableDataset(IterableDataset):
-    def __init__(self, num_samples=5000, image_size=1024, segment_size=224, overlap=64,
-                 target_prob=0.5, min_targets=10, max_targets=40, target_size=8, target_mode="bw",
-                 block_size=1, positive_threshold=0.5, target_shape="square",
-                 mix_mode="per_target", target_kwargs=None):
-        self.num_samples = num_samples
-        self.image_size = image_size
-        self.segment_size = segment_size
-        self.overlap = overlap
-        self.target_prob = target_prob
-        self.min_targets = min_targets
-        self.max_targets = max_targets
-        self.target_size = target_size
-        self.target_mode = target_mode
-        self.block_size = block_size
-        self.positive_threshold = positive_threshold
-        self.target_shape = target_shape
-        self.mix_mode = mix_mode
-        self.target_kwargs = dict(target_kwargs) if target_kwargs is not None else {}
+    def __init__(self, config, split):
+        data = config["data"]
+        training = config["training"]
+        targets = config["targets"]
+        self.num_samples = training[f"{split}_samples"]
+        self.image_size = data["image_size"]
+        self.segment_size = data["segment_size"]
+        self.overlap = data["overlap"]
+        self.target_prob = data["target_prob"] if split == "train" else data["val_target_prob"]
+        self.min_targets = data["min_targets"] if split == "train" else data["val_min_targets"]
+        self.max_targets = data["max_targets"] if split == "train" else data["val_max_targets"]
+        self.target_size = targets["target_size"]
+        self.target_mode = targets["target_mode"]
+        self.block_size = targets["block_size"]
+        self.positive_threshold = data["positive_threshold"]
+        self.target_shape = targets["target_shape"]
+        self.mix_mode = targets["mix_mode"]
+        self.target_kwargs = dict(targets["target_kwargs"])
+
+        if split == "val":
+            self.target_shape = targets["val_target_shape"] or self.target_shape
+            self.mix_mode = targets["val_mix_mode"] or self.mix_mode
 
     def __iter__(self):
         for _ in range(self.num_samples):
@@ -74,37 +79,22 @@ class TargetIterableDataset(IterableDataset):
                 yield segment_tensor, label_tensor
 
 
-def run_train(
-    epochs=3,
-    batch_size=32,
-    lr=1e-3,
-    train_samples=750,
-    val_samples=100,
-    image_size=516,
-    segment_size=64,
-    overlap=16,
-    target_prob=0.8,
-    min_targets=10,
-    max_targets=40,
-    val_target_prob=0.5,
-    val_min_targets=4,
-    val_max_targets=10,
-    seed=42,
-    return_metrics=False,
-    train_target_shape="square",
-    val_target_shape="square",
-    train_mix_mode=None,
-    val_mix_mode=None,
-):
+def run_train(config):
+    training = config["training"]
+    data = config["data"]
+
+    epochs = training["epochs"]
+    batch_size = training["batch_size"]
+    lr = training["lr"]
+    seed = training["seed"]
+    return_metrics = training["return_metrics"]
+    segment_size = data["segment_size"]
+    overlap = data["overlap"]
+
     if torch is None or nn is None or WatermarkCNN is None:
         raise ImportError("PyTorch is required to run training.")
 
     validate_segment_config(segment_size, segment_size, overlap)
-
-    if val_target_shape is None:
-        val_target_shape = train_target_shape
-    if val_mix_mode is None:
-        val_mix_mode = train_mix_mode
 
     if seed is not None:
         random.seed(seed)
@@ -115,28 +105,8 @@ def run_train(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    train_ds = TargetIterableDataset(
-        num_samples=train_samples,
-        image_size=image_size,
-        segment_size=segment_size,
-        overlap=overlap,
-        target_prob=target_prob,
-        min_targets=min_targets,
-        max_targets=max_targets,
-        target_shape=train_target_shape,
-        mix_mode=train_mix_mode,
-    )
-    val_ds = TargetIterableDataset(
-        num_samples=val_samples,
-        image_size=image_size,
-        segment_size=segment_size,
-        overlap=overlap,
-        target_prob=val_target_prob,
-        min_targets=val_min_targets,
-        max_targets=val_max_targets,
-        target_shape=val_target_shape,
-        mix_mode=val_mix_mode,
-    )
+    train_ds = TargetIterableDataset(config, "train")
+    val_ds = TargetIterableDataset(config, "val")
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False, num_workers=0)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
@@ -313,77 +283,41 @@ def plot_sweep_results(results, output_path="segment_sweep_results.png"):
     return output_path
 
 
-def run_segment_sweep(
-    segment_sizes=(32, 64, 96),
-    overlaps=(0, 8, 16, 32),
-    epochs=3,
-    batch_size=32,
-    lr=1e-3,
-    train_samples=300,
-    val_samples=80,
-    image_size=516,
-    target_prob=0.5,
-    repeat_runs=1,
-    seed_base=42,
-    output_csv="segment_sweep_results.csv",
-    plot_path="segment_sweep_results.png",
-    target_shape="square",
-    mix_mode="per_target",
-    train_target_shape=None,
-    val_target_shape=None,
-    train_mix_mode=None,
-    val_mix_mode=None,
-):
-    if train_target_shape is None:
-        train_target_shape = target_shape
-    if val_target_shape is None:
-        val_target_shape = train_target_shape
-    if train_mix_mode is None:
-        train_mix_mode = mix_mode
-    if val_mix_mode is None:
-        val_mix_mode = train_mix_mode
-
-    configs = build_sweep_configs(segment_sizes, overlaps)
+def run_segment_sweep(config):
+    sweep = config["sweep"]
+    outputs = config["outputs"]
+    configs = build_sweep_configs(sweep["segment_sizes"], sweep["overlaps"])
     all_results = []
 
-    for config in configs:
+    for sweep_config in configs:
         try:
-            validate_segment_config(config["segment_size"], config["segment_size"], config["overlap"])
+            validate_segment_config(sweep_config["segment_size"], sweep_config["segment_size"], sweep_config["overlap"])
         except ValueError as exc:
-            print(f"Skipping invalid config segment_size={config['segment_size']} overlap={config['overlap']}: {exc}")
+            print(f"Skipping invalid config segment_size={sweep_config['segment_size']} overlap={sweep_config['overlap']}: {exc}")
             continue
 
-        for run_idx in range(repeat_runs):
-            seed = seed_base + run_idx
+        for run_idx in range(sweep["repeat_runs"]):
+            seed = sweep["seed_base"] + run_idx
+            candidate_config = copy.deepcopy(config)
+            candidate_config["training"]["return_metrics"] = True
+            candidate_config["training"]["seed"] = seed
+            candidate_config["data"]["segment_size"] = sweep_config["segment_size"]
+            candidate_config["data"]["overlap"] = sweep_config["overlap"]
             _, metrics = run_train(
-                epochs=epochs,
-                batch_size=batch_size,
-                lr=lr,
-                train_samples=train_samples,
-                val_samples=val_samples,
-                image_size=image_size,
-                segment_size=config["segment_size"],
-                overlap=config["overlap"],
-                target_prob=target_prob,
-                seed=seed,
-                return_metrics=True,
-                train_target_shape=train_target_shape,
-                val_target_shape=val_target_shape,
-                train_mix_mode=train_mix_mode,
-                val_mix_mode=val_mix_mode,
+                candidate_config,
             )
             metrics["seed"] = seed
             metrics["run"] = run_idx + 1
             all_results.append(metrics)
 
     summary_results = []
-    for config in configs:
-        matching = [item for item in all_results if item["segment_size"] == config["segment_size"] and item["overlap"] == config["overlap"]]
+    for sweep_config in configs:
+        matching = [item for item in all_results if item["segment_size"] == sweep_config["segment_size"] and item["overlap"] == sweep_config["overlap"]]
         if not matching:
             continue
         summary = {
-            "segment_size": config["segment_size"],
-            "overlap": config["overlap"],
+            "segment_size": sweep_config["segment_size"],
+            "overlap": sweep_config["overlap"],
             "val_loss": float(np.mean([item["val_loss"] for item in matching])),
             "val_acc": float(np.mean([item["val_acc"] for item in matching])),
             "val_precision": float(np.mean([item["val_precision"] for item in matching])),
@@ -393,8 +327,8 @@ def run_segment_sweep(
         summary_results.append(summary)
 
     ranked_results = rank_sweep_results(summary_results)
-    save_sweep_results(ranked_results, output_csv)
-    plot_sweep_results(ranked_results, plot_path)
+    save_sweep_results(ranked_results, outputs["output_csv"])
+    plot_sweep_results(ranked_results, outputs["plot_path"])
 
     print("Sweep results:")
     for result in ranked_results:
@@ -406,14 +340,15 @@ def run_segment_sweep(
     return ranked_results
 
 
-def visualise_predictions(model, image, mask, segment_size, overlap, vis_img_path, device=None):
+def visualise_predictions(model, image, mask, config):
     if cv2 is None:
         raise ImportError("OpenCV is required to create prediction visualisations.")
 
+    visualization = config["visualization"]
+    segment_size = visualization["segment_size"]
+    overlap = visualization["overlap"]
+    vis_img_path = config["outputs"]["visualization_path"]
     model_device = next(model.parameters()).device
-    if device is not None:
-        model_device = torch.device(device)
-        model = model.to(model_device)
 
     segments, _, positions = segment_image(image, mask, segment_size, segment_size, overlap)
 
@@ -440,78 +375,85 @@ def visualise_predictions(model, image, mask, segment_size, overlap, vis_img_pat
     cv2.imwrite(vis_img_path, overlay)
 
 
+run_config = {
+    "mode": {
+        "run_sweep": False,
+    },
+    "training": {
+        "epochs": 3,
+        "batch_size": 32,
+        "lr": 1e-3,
+        "train_samples": 2500,
+        "val_samples": 500,
+        "seed": 42,
+        "return_metrics": False,
+    },
+    "data": {
+        "image_size": 516,
+        "segment_size": 64,
+        "overlap": 8,
+        "target_prob": 0.99,
+        "min_targets": 10,
+        "max_targets": 40,
+        "positive_threshold": 0.5,
+        "val_target_prob": 0.5,
+        "val_min_targets": 4,
+        "val_max_targets": 10,
+    },
+    "targets": {
+        "target_size": 8,
+        "target_mode": "bw",
+        "block_size": 1,
+        "target_shape": "square",
+        "mix_mode": None,
+        "target_kwargs": {},
+        "val_target_shape": None,
+        "val_mix_mode": None,
+    },
+    "sweep": {
+        "segment_sizes": (32, 64, 96),
+        "overlaps": (0, 8, 16, 32),
+        "repeat_runs": 1,
+        "seed_base": 42,
+    },
+    "outputs": {
+        "output_csv": "segment_sweep_results.csv",
+        "plot_path": "segment_sweep_results.png",
+        "visualization_path": "prediction_visual_new.png",
+    },
+    "visualization": {
+        "num_targets": 10,
+        "target_shape": "circle",
+        "mix_mode": None,
+        "target_kwargs": {"size": 8, "mode": "bw", "block_size": 1},
+        "segment_size": 32,
+        "overlap": 20,
+    },
+}
+
+
 if __name__ == "__main__":
-    run_sweep = False  # Set to True to run the hyperparameter sweep
-    
-    if run_sweep:
-        sweep_results = run_segment_sweep(
-            segment_sizes=(32, 64, 96),
-            overlaps=(0, 8, 16, 32),
-            epochs=5,
-            batch_size=32,
-            lr=1e-3,
-            train_samples=5000,
-            val_samples=1000,
-            image_size=516,
-            target_prob=0.8,
-            repeat_runs=1,
-            seed_base=42,
-        )
-        
-        model = run_train(
-            epochs=5,
-            batch_size=32,
-            lr=1e-3,
-            train_samples=5000,
-            val_samples=1000,
-            image_size=516,
-            segment_size=sweep_results[0]["segment_size"],
-            overlap=sweep_results[0]["overlap"],
-            target_prob=0.8,
-            seed=42,
-        )
+    config = run_config
+
+    print(f"running. mode: {config["mode"]}")
+
+    if config["mode"]["run_sweep"]:
+        sweep_results = run_segment_sweep(config)
+        selected = sweep_results[0]
+        selected_config = copy.deepcopy(config)
+        selected_config["data"]["segment_size"] = selected["segment_size"]
+        selected_config["data"]["overlap"] = selected["overlap"]
+        model = run_train(selected_config)
     else:
-        model = run_train(
-            epochs=3,
-            batch_size=32,
-            lr=1e-3,
-            train_samples=2500,
-            val_samples=500,
-            image_size=516,
-            segment_size=64,
-            overlap=8,
-            target_prob=0.99,
-            seed=42,
-        )
+        model = run_train(config)
 
-    target_args = (8, "bw", 1)
-    background_noise = create_noise(516, 516)
-    # full_image, mask = embed_targets(background_noise, 5, target_args)
-
-
+    visualization = config["visualization"]
+    background_noise = create_noise(config["data"]["image_size"], config["data"]["image_size"])
     full_image, mask = embed_targets(
-                    background_noise,
-                    10,
-                    target_kwargs = {"size": 8, "mode": "bw", "block_size": 1, "shape": "circle"},
-                    target_shape="circle",
-                    mix_mode=None,
-                )
-
-    if run_sweep:
-        visualise_predictions(
-            model,
-            full_image,
-            mask,
-            segment_size=sweep_results[0]["segment_size"],
-            overlap=sweep_results[0]["overlap"],
-            vis_img_path="prediction_visual.png",
-        )
-    else:
-        visualise_predictions(
-            model,
-            full_image,
-            mask,
-            segment_size=32,
-            overlap=20,
-            vis_img_path="prediction_visual_new.png",
-        )
+        background_noise,
+        visualization["num_targets"],
+        target_kwargs=visualization["target_kwargs"],
+        target_shape=visualization["target_shape"],
+        mix_mode=visualization["mix_mode"],
+    )
+    visualise_predictions(model, full_image, mask, config)
