@@ -31,8 +31,8 @@ def create_square_target(size, mode, block_size):
             for j in range(0, size, block_size):
                 target_pattern[i:i+block_size, j:j+block_size] = random.randint(0, 255)
 
-    return target_pattern
-
+    shape_mask = np.ones((size, size), dtype=bool)
+    return target_pattern, shape_mask
 
 def create_circle_target(size, mode, block_size=1):
 
@@ -58,7 +58,7 @@ def create_circle_target(size, mode, block_size=1):
     # the underlying background outside the circle.
     target_pattern[~mask] = 0
 
-    return target_pattern
+    return target_pattern, mask
 
 
 def create_target(size=8, mode="bw", block_size=1, shape="square"):
@@ -122,7 +122,7 @@ def embed_targets(noise, num_targets, target_args=None, target_kwargs=None, targ
             target_shape=current_shape,
             mix_mode=mix_mode,
         )
-        current_target = create_target(**kwargs)
+        current_target, shape_mask = create_target(**kwargs)
         target_height, target_width = current_target.shape[:2]
         y_pos = random.randint(0, background_height - target_height)
         x_pos = random.randint(0, background_width - target_width)
@@ -130,15 +130,13 @@ def embed_targets(noise, num_targets, target_args=None, target_kwargs=None, targ
         # Only write pixels where the target has non-zero values so the
         # underlying background (noise) remains outside the target's mask.
         region = noise[y_pos:y_pos + target_height, x_pos:x_pos + target_width]
-        write_mask = current_target > 0
-        if write_mask.any():
-            region[write_mask] = current_target[write_mask]
-            noise[y_pos:y_pos + target_height, x_pos:x_pos + target_width] = region
+        if region.ndim == 3:
+            # multi-channel background: broadcast the grey/bw value across channels
+            region[shape_mask] = current_target[shape_mask][:, None]
+        else:
+            region[shape_mask] = current_target[shape_mask]
 
-        mask[y_pos:y_pos + target_height, x_pos:x_pos + target_width] = np.maximum(
-            mask[y_pos:y_pos + target_height, x_pos:x_pos + target_width],
-            (current_target > 0).astype(np.uint8),
-        )
+        mask[y_pos:y_pos + target_height, x_pos:x_pos + target_width] |= shape_mask.astype(np.uint8)
 
     return noise, mask
 
