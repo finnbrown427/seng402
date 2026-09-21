@@ -19,6 +19,16 @@ from pytorch_cnn import WatermarkCNN
 from image_generation import create_noise, embed_targets, segment_image, validate_segment_config
 
 
+def download_breast_cancer_dataset():
+    """Download the medical dataset only when explicitly requested."""
+    try:
+        import kagglehub
+    except ImportError as exc:
+        raise ImportError("Install kagglehub to download the medical dataset.") from exc
+
+    path = kagglehub.dataset_download("andrewmvd/breast-cancer-cell-segmentation")
+    print("Path to dataset files:", path)
+    return path
 
 class TargetIterableDataset(IterableDataset):
     def __init__(self, config, split):
@@ -82,6 +92,7 @@ class TargetIterableDataset(IterableDataset):
 def run_train(config):
     training = config["training"]
     data = config["data"]
+    outputs = config.get("outputs", {})
 
     epochs = training["epochs"]
     batch_size = training["batch_size"]
@@ -211,7 +222,13 @@ def run_train(config):
         )
 
     if return_metrics:
+        checkpoint_path = outputs.get("synthetic_checkpoint")
+        if checkpoint_path:
+            torch.save(model.state_dict(), checkpoint_path)
         return model, last_metrics
+    checkpoint_path = outputs.get("synthetic_checkpoint")
+    if checkpoint_path:
+        torch.save(model.state_dict(), checkpoint_path)
     return model
 
 
@@ -378,6 +395,7 @@ def visualise_predictions(model, image, mask, config):
 run_config = {
     "mode": {
         "run_sweep": False,
+        "run_medical_transfer": False,
     },
     "training": {
         "epochs": 3,
@@ -420,6 +438,22 @@ run_config = {
         "output_csv": "segment_sweep_results.csv",
         "plot_path": "segment_sweep_results.png",
         "visualization_path": "prediction_visual_new.png",
+        "synthetic_checkpoint": "synthetic_watermark_cnn.pt",
+    },
+    "medical": {
+        "dataset": "data/breast-cancer-cell-segmentation",
+        "output_dir": "transfer_outputs",
+        "patch_size": 128,
+        "overlap": 64,
+        "batch_size": 16,
+        "negative_ratio": 1.0,
+        "validation_fraction": 0.2,
+        "test_fraction": 0.2,
+        "head_epochs": 5,
+        "fine_tune_epochs": 5,
+        "head_learning_rate": 1e-3,
+        "fine_tune_learning_rate": 1e-4,
+        "device": "cuda" if torch.cuda.is_available() else "cpu",
     },
     "visualization": {
         "num_targets": 10,
@@ -435,9 +469,13 @@ run_config = {
 if __name__ == "__main__":
     config = run_config
 
-    print(f"running. mode: {config["mode"]}")
+    print(f"running. mode: {config['mode']}")
 
-    if config["mode"]["run_sweep"]:
+    if config["mode"]["run_medical_transfer"]:
+        from transfer_learning import run_medical_from_config
+
+        run_medical_from_config(config)
+    elif config["mode"]["run_sweep"]:
         sweep_results = run_segment_sweep(config)
         selected = sweep_results[0]
         selected_config = copy.deepcopy(config)
