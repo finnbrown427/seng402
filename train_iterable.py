@@ -1,6 +1,10 @@
 import csv
 import copy
 import random
+import threading
+import time
+import tracemalloc
+from contextlib import contextmanager
 import numpy as np
 
 import cv2
@@ -17,6 +21,47 @@ from pytorch_cnn import WatermarkCNN
 
 
 from image_generation import create_noise, embed_targets, segment_image, validate_segment_config
+
+
+@contextmanager
+def measure_run():
+    """Measure wall time, Python allocations, and peak process RSS."""
+    try:
+        import psutil
+    except ImportError as exc:
+        raise ImportError("Install psutil to measure sweep memory usage.") from exc
+
+    process = psutil.Process()
+    rss_samples = []
+    stop_sampling = threading.Event()
+
+    def sample_rss():
+        while not stop_sampling.is_set():
+            rss_samples.append(process.memory_info().rss)
+            stop_sampling.wait(0.01)
+
+    sampler = threading.Thread(target=sample_rss, daemon=True)
+    result = {}
+    tracemalloc.start()
+    start_time = time.perf_counter()
+    sampler.start()
+    try:
+        yield result
+    finally:
+        elapsed_seconds = time.perf_counter() - start_time
+        stop_sampling.set()
+        sampler.join()
+        _, peak_python_bytes = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        if rss_samples:
+            peak_rss_bytes = max(rss_samples)
+        else:
+            peak_rss_bytes = process.memory_info().rss
+        result.update({
+            "time_seconds": elapsed_seconds,
+            "peak_python_memory_mb": peak_python_bytes / (1024 ** 2),
+            "peak_rss_mb": peak_rss_bytes / (1024 ** 2),
+        })
 
 
 def download_breast_cancer_dataset():
@@ -248,6 +293,9 @@ def save_sweep_results(results, output_path="segment_sweep_results.csv"):
     fieldnames = [
         "segment_size",
         "overlap",
+        "time_seconds",
+        "peak_python_memory_mb",
+        "peak_rss_mb",
         "val_loss",
         "val_acc",
         "val_precision",
@@ -320,9 +368,9 @@ def run_segment_sweep(config):
             candidate_config["training"]["seed"] = seed
             candidate_config["data"]["segment_size"] = sweep_config["segment_size"]
             candidate_config["data"]["overlap"] = sweep_config["overlap"]
-            _, metrics = run_train(
-                candidate_config,
-            )
+            with measure_run() as measurement:
+                _, metrics = run_train(candidate_config)
+            metrics.update(measurement)
             metrics["seed"] = seed
             metrics["run"] = run_idx + 1
             all_results.append(metrics)
@@ -335,6 +383,9 @@ def run_segment_sweep(config):
         summary = {
             "segment_size": sweep_config["segment_size"],
             "overlap": sweep_config["overlap"],
+            "time_seconds": float(np.mean([item["time_seconds"] for item in matching])),
+            "peak_python_memory_mb": float(np.mean([item["peak_python_memory_mb"] for item in matching])),
+            "peak_rss_mb": float(np.mean([item["peak_rss_mb"] for item in matching])),
             "val_loss": float(np.mean([item["val_loss"] for item in matching])),
             "val_acc": float(np.mean([item["val_acc"] for item in matching])),
             "val_precision": float(np.mean([item["val_precision"] for item in matching])),
