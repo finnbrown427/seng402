@@ -16,7 +16,13 @@ from torch.utils.data import IterableDataset, DataLoader
 from pytorch_cnn import WatermarkCNN
 
 
-from image_generation import create_noise, embed_targets, segment_image, validate_segment_config
+from image_generation import (
+    create_noise,
+    embed_targets,
+    get_target_shape,
+    segment_image,
+    validate_segment_config,
+)
 
 
 
@@ -41,8 +47,10 @@ class TargetIterableDataset(IterableDataset):
         self.target_kwargs = dict(targets["target_kwargs"])
 
         if split == "val":
+            self.target_size = targets.get("val_target_size") or self.target_size
             self.target_shape = targets["val_target_shape"] or self.target_shape
             self.mix_mode = targets["val_mix_mode"] or self.mix_mode
+            self.target_kwargs.update(targets.get("val_target_kwargs", {}))
 
     def __iter__(self):
         for _ in range(self.num_samples):
@@ -79,6 +87,62 @@ class TargetIterableDataset(IterableDataset):
                 yield segment_tensor, label_tensor
 
 
+def evaluate_model(model, config):
+    """Evaluate a trained model using the validation distribution in config."""
+    training = config["training"]
+    data = config["data"]
+    device = next(model.parameters()).device
+    val_ds = TargetIterableDataset(config, "val")
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=training["batch_size"],
+        shuffle=False,
+        num_workers=0,
+    )
+    criterion = nn.BCEWithLogitsLoss()
+    val_loss = 0.0
+    val_correct = 0
+    val_total = 0
+    val_tp = 0
+    val_fp = 0
+    val_fn = 0
+    eps = 1e-8
+
+    model.eval()
+    with torch.no_grad():
+        for segments, labels in val_loader:
+            segments = segments.to(device)
+            labels = labels.to(device)
+            logits = model(segments)
+            loss = criterion(logits, labels)
+
+            val_loss += loss.item() * segments.size(0)
+            preds = (torch.sigmoid(logits) > 0.5).float()
+            val_correct += (preds == labels).sum().item()
+            val_total += labels.numel()
+
+            labels_i = labels.int()
+            preds_i = preds.int()
+            val_tp += ((preds_i == 1) & (labels_i == 1)).sum().item()
+            val_fp += ((preds_i == 1) & (labels_i == 0)).sum().item()
+            val_fn += ((preds_i == 0) & (labels_i == 1)).sum().item()
+
+    if val_total == 0:
+        raise ValueError("Validation produced no segments; increase val_samples.")
+
+    val_precision = val_tp / (val_tp + val_fp + eps)
+    val_recall = val_tp / (val_tp + val_fn + eps)
+    return {
+        "segment_size": data["segment_size"],
+        "overlap": data["overlap"],
+        "val_loss": val_loss / val_total,
+        "val_acc": val_correct / val_total,
+        "val_precision": val_precision,
+        "val_recall": val_recall,
+        "val_f1": 2 * val_precision * val_recall / (val_precision + val_recall + eps),
+    }
+
+
 def run_train(config):
     training = config["training"]
     data = config["data"]
@@ -106,10 +170,7 @@ def run_train(config):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     train_ds = TargetIterableDataset(config, "train")
-    val_ds = TargetIterableDataset(config, "val")
-
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False, num_workers=0)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
 
     model = WatermarkCNN().to(device)
     criterion = nn.BCEWithLogitsLoss()
@@ -155,38 +216,7 @@ def run_train(config):
         train_recall = tp / (tp + fn + eps)
         train_f1 = 2 * train_precision * train_recall / (train_precision + train_recall + eps)
 
-        # validation loop
-        model.eval()
-        val_loss = 0.0
-        val_correct = 0
-        val_total = 0
-        val_tp = 0
-        val_fp = 0
-        val_fn = 0
-
-        with torch.no_grad():
-            for segments, labels in val_loader:
-                segments = segments.to(device)
-                labels = labels.to(device)
-                logits = model(segments)
-                loss = criterion(logits, labels)
-
-                val_loss += loss.item() * segments.size(0)
-                preds = (torch.sigmoid(logits) > 0.5).float()
-                val_correct += (preds == labels).sum().item()
-                val_total += labels.numel()
-
-                labels_i = labels.int()
-                preds_i = preds.int()
-                val_tp += ((preds_i == 1) & (labels_i == 1)).sum().item()
-                val_fp += ((preds_i == 1) & (labels_i == 0)).sum().item()
-                val_fn += ((preds_i == 0) & (labels_i == 1)).sum().item()
-
-        val_loss /= val_total
-        val_acc = val_correct / val_total
-        val_precision = val_tp / (val_tp + val_fp + eps)
-        val_recall = val_tp / (val_tp + val_fn + eps)
-        val_f1 = 2 * val_precision * val_recall / (val_precision + val_recall + eps)
+        validation_metrics = evaluate_model(model, config)
 
         last_metrics = {
             "segment_size": segment_size,
@@ -197,17 +227,17 @@ def run_train(config):
             "train_precision": train_precision,
             "train_recall": train_recall,
             "train_f1": train_f1,
-            "val_loss": val_loss,
-            "val_acc": val_acc,
-            "val_precision": val_precision,
-            "val_recall": val_recall,
-            "val_f1": val_f1,
+            **validation_metrics,
         }
 
         print(
             f"Epoch {epoch}: \n"
             f"training: loss={train_loss:.4f} acc={train_acc:.3f} prec={train_precision:.3f} recall={train_recall:.3f} F1={train_f1:.3f} \n"
-            f"validation: loss={val_loss:.4f} acc={val_acc:.3f} prec={val_precision:.3f} recall={val_recall:.3f} F1={val_f1:.3f}"
+            f"validation: loss={validation_metrics['val_loss']:.4f} "
+            f"acc={validation_metrics['val_acc']:.3f} "
+            f"prec={validation_metrics['val_precision']:.3f} "
+            f"recall={validation_metrics['val_recall']:.3f} "
+            f"F1={validation_metrics['val_f1']:.3f}"
         )
 
     if return_metrics:
@@ -244,6 +274,83 @@ def save_sweep_results(results, output_path="segment_sweep_results.csv"):
         writer.writeheader()
         for row in results:
             writer.writerow({field: row.get(field, "") for field in fieldnames})
+
+
+def save_generalisation_results(results, output_path="generalisation_results.csv"):
+    fieldnames = [
+        "case",
+        "run",
+        "seed",
+        "target_size",
+        "target_shape",
+        "mix_mode",
+        "segment_size",
+        "overlap",
+        "val_loss",
+        "val_acc",
+        "val_precision",
+        "val_recall",
+        "val_f1",
+    ]
+
+    with open(output_path, "w", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in results:
+            writer.writerow({field: row.get(field, "") for field in fieldnames})
+
+
+def run_generalisation_test(model, config):
+    """Evaluate one trained model on validation cases it did not train on."""
+    generalisation = config["generalisation"]
+    outputs = config["outputs"]
+    results = []
+
+    for case in generalisation["cases"]:
+        if "name" not in case or "target_size" not in case or "target_shape" not in case:
+            raise ValueError("Each generalisation case needs name, target_size, and target_shape.")
+        if case["target_size"] <= 0:
+            raise ValueError(f"target_size must be greater than zero: {case['name']}")
+        target_shape = get_target_shape(case["target_shape"])
+        mix_mode = case.get("mix_mode")
+
+        for run_idx in range(generalisation["repeat_runs"]):
+            seed = generalisation["seed_base"] + run_idx
+            random.seed(seed)
+            np.random.seed(seed)
+            torch.manual_seed(seed)
+
+            case_config = copy.deepcopy(config)
+            case_config["training"]["val_samples"] = generalisation["samples"]
+            case_config["training"]["return_metrics"] = True
+            case_config["training"]["seed"] = seed
+            case_config["targets"]["val_target_size"] = case["target_size"]
+            case_config["targets"]["val_target_shape"] = target_shape
+            case_config["targets"]["val_mix_mode"] = mix_mode
+            case_config["targets"]["val_target_kwargs"] = dict(case.get("target_kwargs", {}))
+
+            metrics = evaluate_model(model, case_config)
+            metrics.update(
+                {
+                    "case": case["name"],
+                    "run": run_idx + 1,
+                    "seed": seed,
+                    "target_size": case["target_size"],
+                    "target_shape": target_shape,
+                    "mix_mode": mix_mode or "",
+                }
+            )
+            results.append(metrics)
+
+    save_generalisation_results(results, outputs["generalisation_csv"])
+
+    print("Generalisation results:")
+    for result in results:
+        print(
+            f"case={result['case']} target_size={result['target_size']} "
+            f"target_shape={result['target_shape']} val_f1={result['val_f1']:.3f}"
+        )
+    return results
 
 
 def plot_sweep_results(results, output_path="segment_sweep_results.png"):
@@ -409,6 +516,8 @@ run_config = {
         "target_kwargs": {},
         "val_target_shape": None,
         "val_mix_mode": None,
+        "val_target_size": None,
+        "val_target_kwargs": {},
     },
     "sweep": {
         "segment_sizes": (32, 64, 96),
@@ -416,8 +525,21 @@ run_config = {
         "repeat_runs": 1,
         "seed_base": 42,
     },
+    "generalisation": {
+        "enabled": False,
+        "samples": 100,
+        "repeat_runs": 1,
+        "seed_base": 1000,
+        "cases": [
+            {"name": "smaller_square", "target_size": 8, "target_shape": "square"},
+            {"name": "larger_square", "target_size": 32, "target_shape": "square"},
+            {"name": "larger_circle", "target_size": 32, "target_shape": "circle"},
+            {"name": "mixed_shapes", "target_size": 16, "target_shape": "mixed", "mix_mode": "per_target"},
+        ],
+    },
     "outputs": {
         "output_csv": "segment_sweep_results.csv",
+        "generalisation_csv": "generalisation_results.csv",
         "plot_path": "segment_sweep_results.png",
         "visualization_path": "prediction_visual_new.png",
     },
@@ -446,6 +568,9 @@ if __name__ == "__main__":
         model = run_train(selected_config)
     else:
         model = run_train(config)
+
+    if config["generalisation"]["enabled"]:
+        run_generalisation_test(model, config)
 
     visualization = config["visualization"]
     background_noise = create_noise(config["data"]["image_size"], config["data"]["image_size"])
