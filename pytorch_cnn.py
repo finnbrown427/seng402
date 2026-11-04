@@ -38,3 +38,26 @@ class WatermarkCNN(nn.Module):
         x = torch.flatten(x, 1)
         x = self.classifier(x)
         return x
+
+
+class SpatialTargetCNN(nn.Module):
+    """Reuse the synthetic encoder while producing a full-resolution mask."""
+
+    def __init__(self, encoder=None):
+        super().__init__()
+        self.features = encoder if encoder is not None else WatermarkCNN().features
+        self.segmentation_head = nn.Sequential(
+            nn.Conv2d(64, 32, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 1, kernel_size=1),
+        )
+
+    def forward(self, x):
+        feature_map = self.features(x)
+        logits = self.segmentation_head(feature_map)
+        return nn.functional.interpolate(
+            logits,
+            size=x.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
