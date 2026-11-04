@@ -226,7 +226,10 @@ def run_train(config):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     train_ds = TargetIterableDataset(config, "train")
+    val_ds = TargetIterableDataset(config, "val")
+
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
 
     model = WatermarkCNN().to(device)
     criterion = nn.BCEWithLogitsLoss()
@@ -276,6 +279,38 @@ def run_train(config):
         train_f1 = 2 * train_precision * train_recall / (train_precision + train_recall + eps)
 
         validation_metrics = evaluate_model(model, config)
+        # validation loop
+        model.eval()
+        val_loss = 0.0
+        val_correct = 0
+        val_total = 0
+        val_tp = 0
+        val_fp = 0
+        val_fn = 0
+
+        with torch.no_grad():
+            for segments, labels in val_loader:
+                segments = segments.to(device)
+                labels = labels.to(device)
+                logits = model(segments)
+                loss = criterion(logits, labels)
+
+                val_loss += loss.item() * segments.size(0)
+                preds = (torch.sigmoid(logits) > 0.5).float()
+                val_correct += (preds == labels).sum().item()
+                val_total += labels.numel()
+
+                labels_i = labels.int()
+                preds_i = preds.int()
+                val_tp += ((preds_i == 1) & (labels_i == 1)).sum().item()
+                val_fp += ((preds_i == 1) & (labels_i == 0)).sum().item()
+                val_fn += ((preds_i == 0) & (labels_i == 1)).sum().item()
+
+        val_loss /= val_total
+        val_acc = val_correct / val_total
+        val_precision = val_tp / (val_tp + val_fp + eps)
+        val_recall = val_tp / (val_tp + val_fn + eps)
+        val_f1 = 2 * val_precision * val_recall / (val_precision + val_recall + eps)
 
         last_metrics = {
             "segment_size": segment_size,
@@ -286,6 +321,11 @@ def run_train(config):
             "train_precision": train_precision,
             "train_recall": train_recall,
             "train_f1": train_f1,
+            "val_loss": val_loss,
+            "val_acc": val_acc,
+            "val_precision": val_precision,
+            "val_recall": val_recall,
+            "val_f1": val_f1,
             **validation_metrics,
         }
 
@@ -592,22 +632,22 @@ def visualise_predictions(model, image, mask, config):
 
 run_config = {
     "mode": {
-        "run_sweep": True,
+        "run_sweep": False,
         "run_medical_transfer": False,
     },
     "training": {
         "epochs": 3,
         "batch_size": 64,
         "lr": 1e-3,
-        "train_samples": 200,
+        "train_samples": 100,
         "val_samples": 50,
         "seed": 43,
         "return_metrics": False,
     },
     "data": {
-        "image_size": 1024,
-        "segment_size": 128,
-        "overlap": 64,
+        "image_size": 512,
+        "segment_size": 64,
+        "overlap": 32,
         "target_prob": 0.75,
         "min_targets": 25,
         "max_targets": 100,
